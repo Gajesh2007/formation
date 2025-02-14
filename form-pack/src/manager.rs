@@ -379,49 +379,37 @@ async fn build_routes(manager: Arc<Mutex<FormPackManager>>) -> Router {
 async fn get_status(
     Path(build_id): Path<String>,
 ) -> Json<PackResponse> {
-    let messages: Vec<PackBuildStatus> = if let Ok(messages) = FormPackManager::read_from_queue(None, None).await {
-        log::info!("Received a get_status request");
-        let msgs = messages.iter().filter_map(|bytes| {
-            let subtopic = bytes[0];
-            let msg = &bytes[1..];
-            match &subtopic {
-                1 => {
-                    let msg: PackBuildStatus = match serde_json::from_slice(msg) {
-                        Ok(msg) => msg,
-                        Err(_) => return None,
-                    };
-
-                    match msg {
-                        PackBuildStatus::Started(ref id) => if *id == build_id {
-                            Some(msg)
-                        } else {
-                            None
-                        },
-                        PackBuildStatus::Failed { ref build_id, .. } => if build_id == build_id {
-                            Some(msg)
-                        } else {
-                            None
-                        },
-                        PackBuildStatus::Completed(ref instance) => if instance.build_id == build_id {
-                            Some(msg)
-                        } else {
-                            None
-                        }
-                    }
-                }
-                _ => None,
+    log::info!("Received a get_status request for build ID: {}", build_id);
+    
+    if let Ok(messages) = FormPackManager::read_from_queue(None, None).await {
+        for bytes in messages.iter() {
+            if bytes[0] != 1 {  // Skip non-status messages
+                continue;
             }
-        }).collect();
-        msgs
-    } else {
-        return Json(PackResponse::Failure)
-    };
 
-    if !messages.is_empty() {
-        return Json(PackResponse::Status(messages.last().unwrap().clone()))
+            if let Ok(response) = serde_json::from_slice::<PackBuildResponse>(&bytes[1..]) {
+                match &response.status {
+                    PackBuildStatus::Started(id) if id == &build_id => {
+                        return Json(PackResponse::Status(response.status));
+                    }
+                    PackBuildStatus::Failed { build_id: id, .. } if id == &build_id => {
+                        return Json(PackResponse::Status(response.status));
+                    }
+                    PackBuildStatus::Completed(instance) if instance.build_id == build_id => {
+                        return Json(PackResponse::Status(response.status));
+                    }
+                    _ => continue,
+                }
+            } else {
+                log::error!("Failed to deserialize message");
+            }
+        }
     } else {
-        return Json(PackResponse::Failure)
+        log::error!("Failed to read from queue");
     }
+
+    log::info!("No status found for build ID: {}", build_id);
+    Json(PackResponse::Failure)
 }
 
 async fn serve(addr: String, manager: Arc<Mutex<FormPackManager>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

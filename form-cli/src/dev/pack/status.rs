@@ -11,13 +11,92 @@ pub struct StatusCommand {
 
 impl StatusCommand {
     pub async fn handle_status(&self, provider: String, port: u16) -> Result<(), Box<dyn std::error::Error>> {
-        let status = Client::new()
-            .post(&format!("http://{provider}:{port}/{}/get_status", self.build_id))
-            .send().await?
-            .json::<PackResponse>()
-            .await?;
+        println!("Checking status for build ID: {}", self.build_id.bright_blue());
+        
+        let response = Client::new()
+            .get(&format!("http://{provider}:{port}/{}/get_status", self.build_id))
+            .send().await;
 
-        print_pack_status(status, self.build_id.clone());
+        let status = match response {
+            Ok(resp) => {
+                match resp.json::<PackResponse>().await {
+                    Ok(status) => status,
+                    Err(e) => {
+                        println!("\nError parsing response from server: {}", e.to_string().bright_red());
+                        println!("This could mean the server is not running or is misconfigured.");
+                        return Ok(());
+                    }
+                }
+            },
+            Err(e) => {
+                println!("\nError connecting to server: {}", e.to_string().bright_red());
+                println!("Please check that:");
+                println!("1. The provider {} is running and accessible", provider.bright_yellow());
+                println!("2. The port {} is correct and open", port.to_string().bright_yellow());
+                println!("3. Your network connection is stable");
+                return Ok(());
+            }
+        };
+
+        match status {
+            PackResponse::Status(status) => {
+                match status {
+                    PackBuildStatus::Started(id) => {
+                        println!(r#"
+Build ID: {} is currently in progress.
+
+Status: {}
+
+Please be patient, as builds can take several minutes depending on:
+- Size of build artifacts
+- Number of dependencies to install
+- System resources available
+
+Check back in a few minutes for an update.
+"#,
+                        id.bright_blue(),
+                        "STARTED".blue());
+                    }
+                    PackBuildStatus::Failed { build_id, reason } => {
+                        println!(r#"
+Build ID: {} has failed.
+
+Status: {}
+Reason: {}
+
+Please check your Formfile and build configuration.
+"#,
+                        build_id.bright_blue(),
+                        "FAILED".bright_red(),
+                        reason.bright_yellow());
+                    }
+                    PackBuildStatus::Completed(instance) => {
+                        println!(r#"
+Build ID: {} has completed successfully!
+
+Status: {}
+
+You can now deploy this build by running:
+{}
+"#,
+                        instance.build_id.bright_blue(),
+                        "COMPLETED".bright_green(),
+                        "form pack ship".bright_yellow());
+                    }
+                }
+            }
+            PackResponse::Success => {
+                println!("\nBuild status check successful, but no status information is available.");
+                println!("This usually means the build ID {} doesn't exist.", self.build_id.bright_yellow());
+            }
+            PackResponse::Failure => {
+                println!("\nFailed to get build status for ID: {}", self.build_id.bright_yellow());
+                println!("This could mean:");
+                println!("1. The build ID doesn't exist");
+                println!("2. The build status has expired from the queue");
+                println!("3. There was an error processing the status request");
+            }
+        }
 
         Ok(())
     }
@@ -123,30 +202,23 @@ instance.build_id.bright_blue(),
         }
         PackResponse::Failure => {
             println!(r#"
-Something went wrong attempting to get the status for your build 
-with build id: {}.
+Something went {} wrong. The response received was {:?} which is an invalid response 
+to the `{}` command.
 
-We are not exactly sure what happened, but the best steps to debug this
-are as follows:
+Please consider doing one of the following: 
 
-    1. Double check your `{}` to ensure they are still servicing the network
-        1.a. If not, you may want to consider rebuilding your `{}` to select a new provider
-        1.b. If so, consider that they may have reconfigured their node and are using a different port than the standard port
-    2. Your provider may be faulty, you can submit a fault challenge. To do so see our docs at {} to learn more about how to do so.
-    3. You may be using an outdated version of the form CLI. If so you may want to consider upgrading. Check for the latest relsease
-    at our github at {}.
-    4. Join our discord at {} and go to the {} channel and paste this response
-    5. Submitting an {} on our project github at {} 
-    6. Sending us a direct message on X at {}
+    1. Join our discord at {} and go to the {} channel and paste this response
+    2. Submitting an {} on our project github at {} 
+    3. Sending us a direct message on X at {}
+
+Someone from our core team will gladly help you out.
 "#,
-build_id.blue(),
-"provider".bright_yellow(),
-"form kit".bright_magenta(),
-"http://docs.formation.cloud/#fault-challenge".bright_blue(),
-"http://github.com/formthefog/formation.git".blue(),
+"terribly".bright_red().on_blue(),
+status,
+"form pack [OPTIONS] build".bright_yellow(),
 "discord.gg/formation".blue(),
-"chewing-glass".bright_yellow(),
-"Issue".yellow(),
+"chewing-glass".blue(),
+"issue".bright_yellow(),
 "http://github.com/formthefog/formation.git".blue(),
 "@formthefog".blue(),
 );
